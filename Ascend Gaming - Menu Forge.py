@@ -864,6 +864,23 @@ def get_or_create_text_object(context, root, item, parent_obj=None):
     obj.data.align_x = item.text_align_x
     obj.data.align_y = item.text_align_y
     obj.data.size = label_text_size(item)
+
+    if hasattr(obj.data, "space_character"):
+        obj.data.space_character = item.text_kerning
+
+    if item.text_font:
+        abs_path = bpy.path.abspath(item.text_font)
+        if os.path.exists(abs_path):
+            font_name = os.path.basename(abs_path)
+            fnt = bpy.data.fonts.get(font_name)
+            if not fnt:
+                try:
+                    fnt = bpy.data.fonts.load(abs_path)
+                except:
+                    pass
+            if fnt:
+                obj.data.font = fnt
+
     set_text_box_width(obj.data, text_content_width(item))
     obj.rotation_euler = (math.radians(90.0), 0.0, 0.0)
     assign_material(obj, get_or_create_material(f"{obj.name}_Text_MAT", item.text_color))
@@ -976,6 +993,8 @@ def apply_panel_settings_to_items(props, panel):
         item.focus_fill_color = panel.batch_focus_color
         item.press_fill_color = panel.batch_press_color
         item.text_color = panel.batch_text_color
+        item.text_font = panel.batch_text_font
+        item.text_kerning = panel.batch_text_kerning
 
         container_width, container_height = item_container_size(item)
         if panel.layout_align_x == "LEFT":
@@ -1911,6 +1930,8 @@ class AGMF_MenuItem(PropertyGroup):
     border_ramp_color_a: FloatVectorProperty(name="Border Ramp A", subtype="COLOR", size=4, min=0.0, max=1.0, default=(0.15, 0.10, 0.03, 1.0), update=live_update_callback)
     border_ramp_color_b: FloatVectorProperty(name="Border Ramp B", subtype="COLOR", size=4, min=0.0, max=1.0, default=(1.0, 0.74, 0.25, 1.0), update=live_update_callback)
     text_color: FloatVectorProperty(name="Text Color", subtype="COLOR", size=4, min=0.0, max=1.0, default=(1.0, 1.0, 1.0, 1.0), update=live_update_callback)
+    text_font: StringProperty(name="Font", subtype="FILE_PATH", default="", update=live_update_callback)
+    text_kerning: FloatProperty(name="Kerning", default=1.0, min=0.0, max=10.0, update=live_update_callback)
     text_size: FloatProperty(name="Text Size", default=0.36, min=0.01, max=10.0, update=live_update_callback)
     text_align_x: EnumProperty(name="Text Align X", items=TEXT_ALIGN_X_TYPES, default="LEFT", update=live_update_callback)
     text_align_y: EnumProperty(name="Text Align Y", items=TEXT_ALIGN_Y_TYPES, default="CENTER", update=live_update_callback)
@@ -1952,6 +1973,8 @@ class AGMF_MenuPanel(PropertyGroup):
     batch_focus_color: FloatVectorProperty(name="Batch Focus Color", subtype="COLOR", size=4, min=0.0, max=1.0, default=(0.75, 0.03, 0.02, 0.98), update=panel_live_update_callback)
     batch_press_color: FloatVectorProperty(name="Batch Press Color", subtype="COLOR", size=4, min=0.0, max=1.0, default=(0.95, 0.72, 0.18, 1.0), update=panel_live_update_callback)
     batch_text_color: FloatVectorProperty(name="Batch Text Color", subtype="COLOR", size=4, min=0.0, max=1.0, default=(1.0, 1.0, 1.0, 1.0), update=panel_live_update_callback)
+    batch_text_font: StringProperty(name="Batch Font", subtype="FILE_PATH", default="", update=panel_live_update_callback)
+    batch_text_kerning: FloatProperty(name="Batch Kerning", default=1.0, min=0.0, max=10.0, update=panel_live_update_callback)
     batch_text_size: FloatProperty(name="Batch Text Size", default=0.36, min=0.01, max=10.0, update=panel_live_update_callback)
     batch_text_align_x: EnumProperty(name="Batch Text Align X", items=TEXT_ALIGN_X_TYPES, default="LEFT", update=panel_live_update_callback)
     batch_text_align_y: EnumProperty(name="Batch Text Align Y", items=TEXT_ALIGN_Y_TYPES, default="CENTER", update=panel_live_update_callback)
@@ -2063,11 +2086,11 @@ def apply_widget_preset(self, context):
     # Built-in presets
     data = None
     if preset == "DEFAULT":
-        data = {"pos_x": 6.0, "pos_y": -4.0, "width": 4.0, "height": 1.0, "fade_in": 0.5, "fade_out": 0.5, "slide_dir": "UP", "slide_dist": 0.5, "fill_type": "COLOR_RAMP", "fill_color": [0.05, 0.05, 0.05, 0.8], "ramp_color_a": [0.02, 0.02, 0.02, 0.9], "ramp_color_b": [0.1, 0.1, 0.1, 0.0], "ramp_direction": "HORIZONTAL", "ramp_offset_x": 0.0, "ramp_offset_y": 0.0, "show_artwork": True, "artwork_size": 0.8, "artwork_offset_x": -1.4, "artwork_offset_y": 0.0, "title_size": 0.3, "title_color": [1.0, 1.0, 1.0, 1.0], "title_offset_x": -0.8, "title_offset_y": 0.15, "artist_size": 0.2, "artist_color": [0.7, 0.7, 0.7, 1.0], "artist_offset_x": -0.8, "artist_offset_y": -0.2}
+        data = {"pos_x": 6.0, "pos_y": -4.0, "width": 4.0, "height": 1.0, "fade_in": 0.5, "fade_out": 0.5, "slide_dir": "UP", "slide_dist": 0.5, "fill_type": "COLOR_RAMP", "fill_color": [0.05, 0.05, 0.05, 0.8], "ramp_color_a": [0.04, 0.0, 0.0, 0.88], "ramp_color_b": [0.65, 0.02, 0.01, 0.0], "ramp_direction": "HORIZONTAL", "ramp_offset_x": 0.0, "ramp_offset_y": 0.0, "show_artwork": True, "artwork_size": 0.8, "artwork_offset_x": -1.4, "artwork_offset_y": 0.0, "title_size": 0.3, "title_color": [1.0, 1.0, 1.0, 1.0], "title_offset_x": -0.8, "title_offset_y": 0.15, "artist_size": 0.2, "artist_color": [0.7, 0.7, 0.7, 1.0], "artist_offset_x": -0.8, "artist_offset_y": -0.2}
     elif preset == "SLEEK":
         data = {"pos_x": 0.0, "pos_y": -4.5, "width": 10.0, "height": 0.8, "fade_in": 0.8, "fade_out": 0.8, "slide_dir": "UP", "slide_dist": 1.0, "fill_type": "COLOR_RAMP", "fill_color": [0.0, 0.0, 0.0, 0.8], "ramp_color_a": [0.0, 0.0, 0.0, 0.9], "ramp_color_b": [0.0, 0.0, 0.0, 0.0], "ramp_direction": "VERTICAL", "ramp_offset_x": 0.0, "ramp_offset_y": -0.5, "show_artwork": False, "artwork_size": 0.8, "artwork_offset_x": -1.4, "artwork_offset_y": 0.0, "title_size": 0.35, "title_color": [1.0, 1.0, 1.0, 1.0], "title_offset_x": -4.0, "title_offset_y": 0.0, "artist_size": 0.25, "artist_color": [0.8, 0.8, 0.8, 1.0], "artist_offset_x": 2.0, "artist_offset_y": 0.0}
     elif preset == "CORNER":
-        data = {"pos_x": -6.5, "pos_y": 3.5, "width": 3.0, "height": 1.5, "fade_in": 0.3, "fade_out": 0.3, "slide_dir": "RIGHT", "slide_dist": 0.8, "fill_type": "COLOR", "fill_color": [0.1, 0.1, 0.15, 0.85], "ramp_color_a": [0.02, 0.02, 0.02, 0.9], "ramp_color_b": [0.1, 0.1, 0.1, 0.0], "ramp_direction": "HORIZONTAL", "ramp_offset_x": 0.0, "ramp_offset_y": 0.0, "show_artwork": True, "artwork_size": 1.2, "artwork_offset_x": 0.0, "artwork_offset_y": 0.0, "title_size": 0.25, "title_color": [1.0, 1.0, 1.0, 1.0], "title_offset_x": 0.0, "title_offset_y": -1.0, "artist_size": 0.18, "artist_color": [0.7, 0.7, 0.7, 1.0], "artist_offset_x": 0.0, "artist_offset_y": -1.3}
+        data = {"pos_x": -6.5, "pos_y": 3.5, "width": 3.0, "height": 1.5, "fade_in": 0.3, "fade_out": 0.3, "slide_dir": "RIGHT", "slide_dist": 0.8, "fill_type": "COLOR", "fill_color": [0.1, 0.1, 0.15, 0.85], "ramp_color_a": [0.04, 0.0, 0.0, 0.88], "ramp_color_b": [0.65, 0.02, 0.01, 0.0], "ramp_direction": "HORIZONTAL", "ramp_offset_x": 0.0, "ramp_offset_y": 0.0, "show_artwork": True, "artwork_size": 1.2, "artwork_offset_x": 0.0, "artwork_offset_y": 0.0, "title_size": 0.25, "title_color": [1.0, 1.0, 1.0, 1.0], "title_offset_x": 0.0, "title_offset_y": -1.0, "artist_size": 0.18, "artist_color": [0.7, 0.7, 0.7, 1.0], "artist_offset_x": 0.0, "artist_offset_y": -1.3}
     else:
         filepath = get_widget_preset_filepath()
         if os.path.exists(filepath):
@@ -2098,8 +2121,8 @@ class AGMF_NowPlayingWidget(PropertyGroup):
 
     fill_type: EnumProperty(name="Background Fill", items=FILL_TYPES, default="COLOR_RAMP", update=live_update_callback)
     fill_color: FloatVectorProperty(name="Fill Color", subtype="COLOR", size=4, min=0.0, max=1.0, default=(0.05, 0.05, 0.05, 0.8), update=live_update_callback)
-    ramp_color_a: FloatVectorProperty(name="Ramp A", subtype="COLOR", size=4, min=0.0, max=1.0, default=(0.02, 0.02, 0.02, 0.9), update=live_update_callback)
-    ramp_color_b: FloatVectorProperty(name="Ramp B", subtype="COLOR", size=4, min=0.0, max=1.0, default=(0.1, 0.1, 0.1, 0.0), update=live_update_callback)
+    ramp_color_a: FloatVectorProperty(name="Ramp A", subtype="COLOR", size=4, min=0.0, max=1.0, default=(0.04, 0.0, 0.0, 0.88), update=live_update_callback)
+    ramp_color_b: FloatVectorProperty(name="Ramp B", subtype="COLOR", size=4, min=0.0, max=1.0, default=(0.65, 0.02, 0.01, 0.0), update=live_update_callback)
     ramp_direction: EnumProperty(name="Ramp Direction", items=RAMP_DIRECTION_TYPES, default="HORIZONTAL", update=live_update_callback)
     ramp_offset_x: FloatProperty(name="Ramp Offset X", default=0.0, min=-10.0, max=10.0, update=live_update_callback)
     ramp_offset_y: FloatProperty(name="Ramp Offset Y", default=0.0, min=-10.0, max=10.0, update=live_update_callback)
@@ -2578,6 +2601,8 @@ class AGMF_OT_ApplyPanelColors(Operator):
             item.press_fill_color = panel.batch_press_color
             if self.include_text:
                 item.text_color = panel.batch_text_color
+        item.text_font = panel.batch_text_font
+        item.text_kerning = panel.batch_text_kerning
         rebuild_menu_objects(context)
         self.report({"INFO"}, f"Applied colors to {len(panel_items)} item(s) in {panel.name}.")
         return {"FINISHED"}
@@ -3491,7 +3516,9 @@ class AGMF_PT_MainPanel(Panel):
             row = layout_box.row(align=True)
             row.prop(panel, "option_width")
             row.prop(panel, "option_height")
+            layout_box.prop(panel, "batch_text_font")
             layout_box.prop(panel, "batch_text_size")
+            layout_box.prop(panel, "batch_text_kerning")
             row = layout_box.row(align=True)
             row.prop(panel, "batch_text_align_x", expand=True)
             row = layout_box.row(align=True)
@@ -3616,7 +3643,9 @@ class AGMF_PT_MainPanel(Panel):
             row = text_box.row(align=True)
             row.prop(item, "text_padding_x")
             row.prop(item, "text_padding_y")
+            text_box.prop(item, "text_font")
             text_box.prop(item, "text_size")
+            text_box.prop(item, "text_kerning")
             row = text_box.row(align=True)
             row.prop(item, "container_padding_x")
             row.prop(item, "container_padding_y")
