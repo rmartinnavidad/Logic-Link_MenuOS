@@ -32,10 +32,35 @@ try:
 except Exception:
     aud = None
 
+
+
+
+
+
+
+
+try:
+    import bpy.utils.previews
+    _CUSTOM_ICONS = None
+except Exception:
+    _CUSTOM_ICONS = None
+
+def get_track_icon_id(filepath):
+    global _CUSTOM_ICONS
+    if _CUSTOM_ICONS is None or not filepath:
+        return 0
+
+
 _AUDIO_DEVICE = None
 _AUDIO_HANDLE = None
 _AUDIO_TRACK_INDEX = -1
 _LIVE_REBUILD_PENDING = False
+_WIDGET_ANIM_STATE = "HIDDEN"  # HIDDEN, IN, IDLE, OUT
+_WIDGET_ANIM_TIMER = 0.0
+_WIDGET_CURRENT_OFFSET = 0.0
+_WIDGET_CONTAINER_NAME = ""
+_WIDGET_SLIDE_DIR = "UP"
+_WIDGET_SLIDE_DIST = 1.0
 _LIVE_PANEL_APPLYING = False
 
 
@@ -585,6 +610,101 @@ def get_audio_device():
     return _AUDIO_DEVICE
 
 
+
+
+def widget_anim_tick():
+    global _WIDGET_ANIM_STATE, _WIDGET_ANIM_TIMER, _WIDGET_CURRENT_OFFSET, _WIDGET_CONTAINER_NAME
+
+    if _WIDGET_ANIM_STATE == "HIDDEN":
+        return 0.1
+
+    try:
+        wm = bpy.context.window_manager
+        if not wm.windows: return 0.1
+        scene = wm.windows[0].scene
+        props = scene.agmf_props
+        widget = props.now_playing_widget
+
+        container = bpy.data.objects.get(_WIDGET_CONTAINER_NAME)
+        if not container:
+            return 0.1
+
+        dt = 0.05
+        _WIDGET_ANIM_TIMER += dt
+
+        target_offset = 0.0
+
+        if _WIDGET_ANIM_STATE == "IN":
+            # Slide in
+            progress = min(1.0, _WIDGET_ANIM_TIMER / max(0.1, widget.fade_in))
+            # easing easeOutCubic
+            ease = 1 - pow(1 - progress, 3)
+            _WIDGET_CURRENT_OFFSET = _WIDGET_SLIDE_DIST * (1.0 - ease)
+            if progress >= 1.0:
+                _WIDGET_ANIM_STATE = "IDLE"
+                _WIDGET_ANIM_TIMER = 0.0
+
+        elif _WIDGET_ANIM_STATE == "IDLE":
+            _WIDGET_CURRENT_OFFSET = 0.0
+            if _WIDGET_ANIM_TIMER >= props.now_playing_duration:
+                _WIDGET_ANIM_STATE = "OUT"
+                _WIDGET_ANIM_TIMER = 0.0
+
+        elif _WIDGET_ANIM_STATE == "OUT":
+            # Slide out
+            progress = min(1.0, _WIDGET_ANIM_TIMER / max(0.1, widget.fade_out))
+            # easing easeInCubic
+            ease = progress * progress * progress
+            _WIDGET_CURRENT_OFFSET = _WIDGET_SLIDE_DIST * ease
+            if progress >= 1.0:
+                _WIDGET_ANIM_STATE = "HIDDEN"
+                _WIDGET_CURRENT_OFFSET = _WIDGET_SLIDE_DIST
+                # Hide the widget objects entirely
+                for child in container.children:
+                    child.hide_viewport = True
+                    child.hide_render = True
+
+        # Apply offset to base location
+        base_x = widget.pos_x
+        base_y = widget.pos_y
+        if _WIDGET_SLIDE_DIR == "UP": base_y -= _WIDGET_CURRENT_OFFSET
+        elif _WIDGET_SLIDE_DIR == "DOWN": base_y += _WIDGET_CURRENT_OFFSET
+        elif _WIDGET_SLIDE_DIR == "LEFT": base_x += _WIDGET_CURRENT_OFFSET
+        elif _WIDGET_SLIDE_DIR == "RIGHT": base_x -= _WIDGET_CURRENT_OFFSET
+
+        container.location = (base_x, -0.1, base_y)
+
+    except Exception as exc:
+        pass
+
+    return 0.05
+
+def autoplay_tick():
+    global _AUDIO_HANDLE, _AUDIO_TRACK_INDEX
+
+    # Check if a track is playing and if it has finished
+    if _AUDIO_HANDLE and _AUDIO_TRACK_INDEX >= 0:
+        try:
+            # status tells us if it's playing (1) or finished (0)
+            if _AUDIO_HANDLE.status == 0:
+                _AUDIO_HANDLE = None # clear old handle
+
+                # We need context to play next track, so we get the current window manager's first window's scene
+                wm = bpy.context.window_manager
+                if wm.windows:
+                    scene = wm.windows[0].scene
+                    props = scene.agmf_props
+
+                    if props.soundtrack_enabled:
+                        index = choose_next_track_index(props, _AUDIO_TRACK_INDEX)
+                        if index >= 0:
+                            props.soundtrack_tracks_index = index
+                            play_soundtrack_track(props.soundtrack_tracks[index], index)
+        except Exception as exc:
+            pass
+
+    return 1.0 # poll every 1 second
+
 def stop_audio_preview():
     global _AUDIO_HANDLE, _AUDIO_TRACK_INDEX
     if _AUDIO_HANDLE:
@@ -731,6 +851,20 @@ def choose_next_track_index(props, current_index):
             pos = enabled.index(current_index)
             return enabled[(pos + 1) % len(enabled)] if props.soundtrack_loop or pos + 1 < len(enabled) else -1
         return enabled[0]
+    if props.soundtrack_order in {"SHUFFLE", "RANDOM"}:
+        choices = [idx for idx in enabled if idx != current_index] or enabled
+        return random.choice(choices)
+    return enabled[0]
+
+def choose_prev_track_index(props, current_index):
+    enabled = [idx for idx, track in enumerate(props.soundtrack_tracks) if track.enabled]
+    if not enabled:
+        return -1
+    if props.soundtrack_order == "SEQUENTIAL":
+        if current_index in enabled:
+            pos = enabled.index(current_index)
+            return enabled[(pos - 1) % len(enabled)] if props.soundtrack_loop or pos - 1 >= 0 else -1
+        return enabled[-1]
     if props.soundtrack_order in {"SHUFFLE", "RANDOM"}:
         choices = [idx for idx in enabled if idx != current_index] or enabled
         return random.choice(choices)
@@ -1300,6 +1434,11 @@ def rebuild_now_playing_widget(context, root, props):
     container.location = (widget.pos_x, -0.1, widget.pos_y)
     container["agmf_item_name"] = "NowPlayingContainer"
 
+    global _WIDGET_CONTAINER_NAME, _WIDGET_SLIDE_DIR, _WIDGET_SLIDE_DIST
+    _WIDGET_CONTAINER_NAME = base_name
+    _WIDGET_SLIDE_DIR = widget.slide_dir
+    _WIDGET_SLIDE_DIST = widget.slide_dist
+
     # Hide all contents if widget is not showing
     should_show = props.soundtrack_enabled and props.show_now_playing
 
@@ -1592,6 +1731,13 @@ try:
     import aud
 except Exception:
     aud = None
+
+
+
+
+
+try:
+
 try:
     from bge import texture
 except Exception:
@@ -2350,11 +2496,20 @@ class AGMF_UL_BackgroundMediaLayers(UIList):
 class AGMF_UL_SoundtrackTracks(UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         row = layout.row(align=True)
-        row.prop(item, "enabled", text="")
+
+        # Display the custom cover art icon if available
+        custom_icon = get_track_icon_id(item.album_art_path) if getattr(item, "album_art_path", "") else 0
+        if custom_icon:
+            row.template_icon(icon_value=custom_icon, scale=2.5)
+        else:
+            row.label(text="", icon="DISC")
+
+        col = row.column()
         title = item.song_title or item.name or "Unnamed Track"
-        row.label(text=f"{item.track_number}. {title}", icon="PLAY_SOUND")
-        if item.artist:
-            row.label(text=item.artist)
+        col.label(text=f"{item.track_number}. {title}")
+        col.label(text=f"{item.artist} | {item.album}")
+
+        row.prop(item, "enabled", text="")
         row.prop(item, "volume", text="Vol", slider=True)
 
 
@@ -3098,6 +3253,22 @@ class AGMF_OT_PreviewNextSoundtrackTrack(Operator):
         self.report({"INFO"} if ok else {"WARNING"}, message)
         return {"FINISHED"} if ok else {"CANCELLED"}
 
+class AGMF_OT_PreviewPreviousSoundtrackTrack(Operator):
+    bl_idname = "agmf.preview_prev_soundtrack_track"
+    bl_label = "Preview Previous Track"
+    bl_description = "Preview the previous soundtrack track using the selected playback rule"
+
+    def execute(self, context):
+        props = context.scene.agmf_props
+        index = choose_prev_track_index(props, _AUDIO_TRACK_INDEX)
+        if index < 0:
+            self.report({"WARNING"}, "No enabled soundtrack tracks found.")
+            return {"CANCELLED"}
+        props.soundtrack_tracks_index = index
+        ok, message = play_soundtrack_track(props.soundtrack_tracks[index], index)
+        self.report({"INFO"} if ok else {"WARNING"}, message)
+        return {"FINISHED"} if ok else {"CANCELLED"}
+
 
 class AGMF_OT_StopSoundtrackPreview(Operator):
     bl_idname = "agmf.stop_soundtrack_preview"
@@ -3675,6 +3846,21 @@ class AGMF_PT_MainPanel(Panel):
 
         box = layout.box()
         box.label(text="Soundtrack OS", icon="PLAY_SOUND")
+
+        # Eye candy "Now Playing" preview in the UI Panel
+        if props.soundtrack_tracks and _AUDIO_TRACK_INDEX >= 0 and _AUDIO_TRACK_INDEX < len(props.soundtrack_tracks):
+            active_track = props.soundtrack_tracks[_AUDIO_TRACK_INDEX]
+            preview_box = box.box()
+            row = preview_box.row()
+            custom_icon = get_track_icon_id(active_track.album_art_path) if getattr(active_track, "album_art_path", "") else 0
+            if custom_icon:
+                row.template_icon(icon_value=custom_icon, scale=4.0)
+            col = row.column()
+            col.label(text="NOW PLAYING", icon='PLAY')
+            col.label(text=active_track.song_title or active_track.name or "Unknown Track")
+            col.label(text=f"Artist: {active_track.artist}")
+            col.label(text=f"Album: {active_track.album}")
+
         box.prop(props, "soundtrack_enabled")
         box.prop(props, "soundtrack_order")
         box.prop(props, "soundtrack_loop")
@@ -3689,6 +3875,7 @@ class AGMF_PT_MainPanel(Panel):
         col.operator("agmf.sort_soundtrack", text="", icon="SORTALPHA")
         col.operator("agmf.shuffle_soundtrack", text="", icon="FILE_REFRESH")
         row = box.row(align=True)
+        row.operator("agmf.preview_prev_soundtrack_track", text="Prev", icon="PREV_KEYFRAME")
         row.operator("agmf.preview_soundtrack_track", text="Play", icon="PLAY")
         row.operator("agmf.preview_next_soundtrack_track", text="Next", icon="NEXT_KEYFRAME")
         row.operator("agmf.stop_soundtrack_preview", text="Stop", icon="PAUSE")
@@ -3767,6 +3954,7 @@ classes = (
     AGMF_OT_SortSoundtrack,
     AGMF_OT_ShuffleSoundtrack,
     AGMF_OT_PreviewSoundtrackTrack,
+    AGMF_OT_PreviewPreviousSoundtrackTrack,
     AGMF_OT_PreviewNextSoundtrackTrack,
     AGMF_OT_StopSoundtrackPreview,
     AGMF_OT_PreviewBackgroundMedia,
@@ -3780,12 +3968,37 @@ classes = (
 
 
 def register():
+    global _CUSTOM_ICONS
+    try:
+        import bpy.utils.previews
+        _CUSTOM_ICONS = bpy.utils.previews.new()
+    except Exception:
+        pass
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.types.Scene.agmf_props = PointerProperty(type=AGMF_Properties)
 
+    if not bpy.app.timers.is_registered(autoplay_tick):
+        bpy.app.timers.register(autoplay_tick)
+    if not bpy.app.timers.is_registered(widget_anim_tick):
+        bpy.app.timers.register(widget_anim_tick)
+
 
 def unregister():
+    global _CUSTOM_ICONS
+
+    if bpy.app.timers.is_registered(autoplay_tick):
+        bpy.app.timers.unregister(autoplay_tick)
+    if bpy.app.timers.is_registered(widget_anim_tick):
+        bpy.app.timers.unregister(widget_anim_tick)
+
+    if _CUSTOM_ICONS is not None:
+        try:
+            import bpy.utils.previews
+            bpy.utils.previews.remove(_CUSTOM_ICONS)
+        except Exception:
+            pass
+        _CUSTOM_ICONS = None
     del bpy.types.Scene.agmf_props
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
