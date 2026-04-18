@@ -343,7 +343,7 @@ def assign_material(obj, mat):
         obj.data.materials[0] = mat
 
 
-def get_or_create_ramp_material(name, color_a, color_b, direction="HORIZONTAL", roughness=0.65):
+def get_or_create_ramp_material(name, color_a, color_b, direction="HORIZONTAL", roughness=0.65, offset_x=0.0, offset_y=0.0):
     mat = bpy.data.materials.get(name)
     if mat is None:
         mat = bpy.data.materials.new(name)
@@ -379,6 +379,9 @@ def get_or_create_ramp_material(name, color_a, color_b, direction="HORIZONTAL", 
     ramp.color_ramp.elements[0].color = color_a
     ramp.color_ramp.elements[1].position = 1.0
     ramp.color_ramp.elements[1].color = color_b
+    if "Location" in mapping.inputs:
+        mapping.inputs["Location"].default_value[0] = offset_x
+        mapping.inputs["Location"].default_value[1] = offset_y
 
     def link_once(output, input_socket):
         for link in links:
@@ -599,6 +602,98 @@ def get_track_filepath(track):
     return bpy.path.abspath(track.filepath) if track.filepath else ""
 
 
+
+
+def extract_mp3_metadata(filepath):
+    import os
+    import struct
+    metadata = {
+        'title': '',
+        'artist': '',
+        'album': '',
+        'artwork_path': ''
+    }
+    if not os.path.exists(filepath):
+        return metadata
+
+    def decode_text_frame(data):
+        if not data: return ""
+        encoding = data[0]
+        try:
+            if encoding == 0: return data[1:].decode('iso-8859-1').rstrip('\x00')
+            elif encoding == 1: return data[1:].decode('utf-16').rstrip('\x00')
+            elif encoding == 2: return data[1:].decode('utf-16-be').rstrip('\x00')
+            elif encoding == 3: return data[1:].decode('utf-8').rstrip('\x00')
+        except: pass
+        return ""
+
+    def extract_apic_frame(data, mp3_filepath):
+        try:
+            encoding = data[0]
+            idx = 1
+            mime_end = data.find(b'\x00', idx)
+            if mime_end == -1: return ""
+            mime_type = data[idx:mime_end].decode('iso-8859-1')
+            idx = mime_end + 1
+            idx += 1 # pic_type
+            if encoding in (1, 2):
+                desc_end = data.find(b'\x00\x00', idx)
+                if desc_end != -1:
+                    if desc_end % 2 != idx % 2: desc_end += 1
+                    idx = desc_end + 2
+                else: idx = len(data)
+            else:
+                desc_end = data.find(b'\x00', idx)
+                if desc_end != -1: idx = desc_end + 1
+                else: idx = len(data)
+            image_data = data[idx:]
+            if not image_data: return ""
+            ext = '.png' if 'png' in mime_type.lower() else '.jpg'
+            base_name = os.path.splitext(os.path.basename(mp3_filepath))[0]
+            artwork_path = os.path.join(os.path.dirname(mp3_filepath), f"{base_name}_artwork{ext}")
+            with open(artwork_path, 'wb') as img_f:
+                img_f.write(image_data)
+            return artwork_path
+        except:
+            return ""
+
+    try:
+        with open(filepath, 'rb') as f:
+            header = f.read(10)
+            if header[:3] == b'ID3':
+                version = header[3]
+                flags = header[5]
+                size = ((header[6] & 0x7F) << 21) | ((header[7] & 0x7F) << 14) | ((header[8] & 0x7F) << 7) | (header[9] & 0x7F)
+                if flags & 0x40:
+                    ext_header_size = struct.unpack('>I', f.read(4))[0]
+                    f.read(ext_header_size - 4)
+                read_size = 0
+                while read_size < size:
+                    if version >= 3:
+                        frame_header = f.read(10)
+                        if len(frame_header) < 10 or frame_header[0] == 0: break
+                        frame_id = frame_header[:4]
+                        if version == 4:
+                            frame_size = ((frame_header[4] & 0x7F) << 21) | ((frame_header[5] & 0x7F) << 14) | ((frame_header[6] & 0x7F) << 7) | (frame_header[7] & 0x7F)
+                        else:
+                            frame_size = int.from_bytes(frame_header[4:8], 'big')
+                        read_size += 10 + frame_size
+                    else:
+                        frame_header = f.read(6)
+                        if len(frame_header) < 6 or frame_header[0] == 0: break
+                        frame_id = frame_header[:3]
+                        frame_size = int.from_bytes(frame_header[3:6], 'big')
+                        read_size += 6 + frame_size
+                    frame_data = f.read(frame_size)
+                    if frame_id in (b'TIT2', b'TT2'): metadata['title'] = decode_text_frame(frame_data)
+                    elif frame_id in (b'TPE1', b'TP1'): metadata['artist'] = decode_text_frame(frame_data)
+                    elif frame_id in (b'TALB', b'TAL'): metadata['album'] = decode_text_frame(frame_data)
+                    elif frame_id in (b'APIC', b'PIC'):
+                        aw_path = extract_apic_frame(frame_data, filepath)
+                        if aw_path: metadata['artwork_path'] = aw_path
+    except: pass
+    return metadata
+
 def play_soundtrack_track(track, index=-1):
     global _AUDIO_HANDLE, _AUDIO_TRACK_INDEX
     device = get_audio_device()
@@ -618,6 +713,10 @@ def play_soundtrack_track(track, index=-1):
         handle.volume = track.volume
         _AUDIO_HANDLE = handle
         _AUDIO_TRACK_INDEX = index
+
+        # Trigger live rebuild to update widget
+        request_live_rebuild()
+
         return True, f"Playing {track.song_title or track.name}"
     except Exception as exc:
         return False, f"Could not preview audio: {exc}"
@@ -768,6 +867,11 @@ def get_or_create_text_object(context, root, item, parent_obj=None):
     set_text_box_width(obj.data, text_content_width(item))
     obj.rotation_euler = (math.radians(90.0), 0.0, 0.0)
     assign_material(obj, get_or_create_material(f"{obj.name}_Text_MAT", item.text_color))
+
+    if item.item_type == "LOGO":
+        obj.hide_viewport = True
+        obj.hide_render = True
+
     return obj
 
 
@@ -867,6 +971,8 @@ def apply_panel_settings_to_items(props, panel):
         item.fill_color = panel.batch_fill_color
         item.ramp_color_a = panel.batch_ramp_color_a
         item.ramp_color_b = panel.batch_ramp_color_b
+        item.ramp_offset_x = panel.batch_ramp_offset_x
+        item.ramp_offset_y = panel.batch_ramp_offset_y
         item.focus_fill_color = panel.batch_focus_color
         item.press_fill_color = panel.batch_press_color
         item.text_color = panel.batch_text_color
@@ -918,12 +1024,17 @@ def get_or_create_button_rect(context, root, item, location, parent_obj=None):
     elif item.preview_state == "HIDDEN":
         color = (color[0], color[1], color[2], 0.0)
 
-    if item.fill_type == "COLOR_RAMP" and item.preview_state == "IDLE":
+    props = context.scene.agmf_props
+    if item.item_type == "LOGO":
+        mat = try_load_image_material(f"{rect_name}_Logo_MAT", props.logo_path, color)
+    elif item.fill_type == "COLOR_RAMP" and item.preview_state == "IDLE":
         mat = get_or_create_ramp_material(
             f"{rect_name}_Ramp_MAT",
             item.ramp_color_a,
             item.ramp_color_b,
             item.ramp_direction,
+            offset_x=item.ramp_offset_x,
+            offset_y=item.ramp_offset_y,
         )
     elif item.fill_type == "IMAGE":
         mat = try_load_image_material(f"{rect_name}_Image_MAT", item.media_path, color)
@@ -1151,6 +1262,113 @@ def item_world_location(item, base_location, props):
     return (base_location[0] + px, base_location[1] + py, base_location[2] + pz)
 
 
+
+def rebuild_now_playing_widget(context, root, props):
+
+    scene = context.scene
+    collection = ensure_collection(scene, menu_collection_name(root.name))
+    widget = props.now_playing_widget
+
+    # Base Container
+    base_name = f"{root.name}_NowPlaying"
+    container = bpy.data.objects.get(base_name)
+    if container is None:
+        container = bpy.data.objects.new(base_name, None)
+        container.empty_display_type = "PLAIN_AXES"
+        collection.objects.link(container)
+    unlink_from_other_collections(container, collection)
+    parent_as_local(container, root)
+    container.location = (widget.pos_x, -0.1, widget.pos_y)
+    container["agmf_item_name"] = "NowPlayingContainer"
+
+    # Hide all contents if widget is not showing
+    should_show = props.soundtrack_enabled and props.show_now_playing
+
+
+    # Background Plane
+    bg_name = f"{base_name}_BG"
+    bg = get_or_create_plane_object(context, bg_name, collection, (0.0, 0.0, 0.0), (widget.width, widget.height, 1.0))
+    parent_as_local(bg, container)
+    bg.location = (0.0, 0.0, 0.0)
+    bg.hide_viewport = not should_show
+    bg.hide_render = not should_show
+    bg["agmf_item_name"] = "NowPlayingBG"
+
+    if widget.fill_type == "COLOR_RAMP":
+        mat = get_or_create_ramp_material(f"{bg_name}_MAT", widget.ramp_color_a, widget.ramp_color_b, widget.ramp_direction, offset_x=widget.ramp_offset_x, offset_y=widget.ramp_offset_y)
+    else:
+        mat = get_or_create_material(f"{bg_name}_MAT", widget.fill_color)
+    assign_material(bg, mat)
+
+    # Text: Title
+    title_name = f"{base_name}_Title"
+    title_obj = bpy.data.objects.get(title_name)
+    if title_obj is None:
+        bpy.ops.object.text_add(location=(0.0, 0.0, 0.0))
+        title_obj = context.active_object
+        title_obj.name = title_name
+        collection.objects.link(title_obj)
+        unlink_from_other_collections(title_obj, collection)
+    parent_as_local(title_obj, container)
+    title_obj.location = (widget.title_offset_x, -0.01, widget.title_offset_y)
+    title_obj.hide_viewport = not should_show
+    title_obj.hide_render = not should_show
+    title_obj["agmf_item_name"] = "NowPlayingTitle"
+    title_obj.rotation_euler = (math.radians(90.0), 0.0, 0.0)
+    title_obj.data.size = widget.title_size
+    title_obj.data.body = "Song Title"
+    assign_material(title_obj, get_or_create_material(f"{title_name}_MAT", widget.title_color))
+
+    # Text: Artist
+    artist_name = f"{base_name}_Artist"
+    artist_obj = bpy.data.objects.get(artist_name)
+    if artist_obj is None:
+        bpy.ops.object.text_add(location=(0.0, 0.0, 0.0))
+        artist_obj = context.active_object
+        artist_obj.name = artist_name
+        collection.objects.link(artist_obj)
+        unlink_from_other_collections(artist_obj, collection)
+    parent_as_local(artist_obj, container)
+    artist_obj.location = (widget.artist_offset_x, -0.01, widget.artist_offset_y)
+    artist_obj.hide_viewport = not should_show
+    artist_obj.hide_render = not should_show
+    artist_obj["agmf_item_name"] = "NowPlayingArtist"
+    artist_obj.rotation_euler = (math.radians(90.0), 0.0, 0.0)
+    artist_obj.data.size = widget.artist_size
+    artist_obj.data.body = "Artist Name"
+    assign_material(artist_obj, get_or_create_material(f"{artist_name}_MAT", widget.artist_color))
+
+    # Artwork
+    art_name = f"{base_name}_Artwork"
+    art_obj = get_or_create_plane_object(context, art_name, collection, (0.0, 0.0, 0.0), (widget.artwork_size, widget.artwork_size, 1.0))
+    parent_as_local(art_obj, container)
+    art_obj.location = (widget.artwork_offset_x, -0.02, widget.artwork_offset_y)
+    art_obj.hide_viewport = not (should_show and widget.show_artwork)
+    art_obj.hide_render = not (should_show and widget.show_artwork)
+    art_obj["agmf_item_name"] = "NowPlayingArtwork"
+
+    # Fetch active track details
+    title_str = "Song Title"
+    artist_str = "Artist Name"
+    art_path = ""
+    global _AUDIO_TRACK_INDEX
+    if _AUDIO_TRACK_INDEX >= 0 and _AUDIO_TRACK_INDEX < len(props.soundtrack_tracks):
+        track = props.soundtrack_tracks[_AUDIO_TRACK_INDEX]
+        title_str = track.song_title or track.name or "Unknown Track"
+        artist_str = track.artist or ""
+        art_path = track.album_art_path
+
+    title_obj.data.body = title_str
+    artist_obj.data.body = artist_str
+
+    art_mat = None
+    if widget.show_artwork and art_path:
+        art_mat = try_load_image_material(f"{art_name}_MAT", art_path, (0.2, 0.2, 0.2, 1.0))
+    if not art_mat:
+        art_mat = get_or_create_material(f"{art_name}_MAT", (0.2, 0.2, 0.2, 1.0))
+    assign_material(art_obj, art_mat)
+
+
 def rebuild_menu_objects(context):
     props = context.scene.agmf_props
     root = get_menu_root(props)
@@ -1163,12 +1381,15 @@ def rebuild_menu_objects(context):
     ensure_background_media_layers(context, root, props, background_parent)
 
     item_names = {item.name for item in props.menu_items}
+    item_names.update({"NowPlayingContainer", "NowPlayingBG", "NowPlayingTitle", "NowPlayingArtist", "NowPlayingArtwork"})
     prefix = f"{root.name}_"
     for obj in list(bpy.data.objects):
         if obj.name.startswith(prefix) and obj.type in {"FONT", "MESH", "EMPTY"}:
             existing_name = obj.get("agmf_item_name")
             if existing_name and existing_name not in item_names:
                 bpy.data.objects.remove(obj, do_unlink=True)
+
+    rebuild_now_playing_widget(context, root, props)
 
     count = len(props.menu_items)
     for index, item in enumerate(props.menu_items):
@@ -1678,6 +1899,8 @@ class AGMF_MenuItem(PropertyGroup):
     ramp_color_a: FloatVectorProperty(name="Ramp A", subtype="COLOR", size=4, min=0.0, max=1.0, default=(0.04, 0.0, 0.0, 0.88), update=live_update_callback)
     ramp_color_b: FloatVectorProperty(name="Ramp B", subtype="COLOR", size=4, min=0.0, max=1.0, default=(0.65, 0.02, 0.01, 0.96), update=live_update_callback)
     ramp_direction: EnumProperty(name="Ramp Direction", items=RAMP_DIRECTION_TYPES, default="HORIZONTAL", update=live_update_callback)
+    ramp_offset_x: FloatProperty(name="Ramp Offset X", default=0.0, min=-10.0, max=10.0, update=live_update_callback)
+    ramp_offset_y: FloatProperty(name="Ramp Offset Y", default=0.0, min=-10.0, max=10.0, update=live_update_callback)
     focus_fill_color: FloatVectorProperty(name="Focus Color", subtype="COLOR", size=4, min=0.0, max=1.0, default=(0.75, 0.03, 0.02, 0.98), update=live_update_callback)
     press_fill_color: FloatVectorProperty(name="Press Color", subtype="COLOR", size=4, min=0.0, max=1.0, default=(0.95, 0.72, 0.18, 1.0), update=live_update_callback)
     media_path: StringProperty(name="Media Path", subtype="FILE_PATH", default="", update=live_update_callback)
@@ -1723,6 +1946,8 @@ class AGMF_MenuPanel(PropertyGroup):
     batch_fill_type: EnumProperty(name="Batch Fill", items=FILL_TYPES, default="COLOR_RAMP", update=panel_live_update_callback)
     batch_ramp_color_a: FloatVectorProperty(name="Batch Ramp A", subtype="COLOR", size=4, min=0.0, max=1.0, default=(0.04, 0.0, 0.0, 0.88), update=panel_live_update_callback)
     batch_ramp_color_b: FloatVectorProperty(name="Batch Ramp B", subtype="COLOR", size=4, min=0.0, max=1.0, default=(0.65, 0.02, 0.01, 0.96), update=panel_live_update_callback)
+    batch_ramp_offset_x: FloatProperty(name="Batch Ramp Offset X", default=0.0, min=-10.0, max=10.0, update=panel_live_update_callback)
+    batch_ramp_offset_y: FloatProperty(name="Batch Ramp Offset Y", default=0.0, min=-10.0, max=10.0, update=panel_live_update_callback)
     batch_fill_color: FloatVectorProperty(name="Batch Fill Color", subtype="COLOR", size=4, min=0.0, max=1.0, default=(0.45, 0.02, 0.02, 0.92), update=panel_live_update_callback)
     batch_focus_color: FloatVectorProperty(name="Batch Focus Color", subtype="COLOR", size=4, min=0.0, max=1.0, default=(0.75, 0.03, 0.02, 0.98), update=panel_live_update_callback)
     batch_press_color: FloatVectorProperty(name="Batch Press Color", subtype="COLOR", size=4, min=0.0, max=1.0, default=(0.95, 0.72, 0.18, 1.0), update=panel_live_update_callback)
@@ -1808,7 +2033,162 @@ class AGMF_SoundtrackTrack(PropertyGroup):
     fade_out: FloatProperty(name="Fade Out", default=0.5, min=0.0, max=30.0)
 
 
+
+class AGMF_NowPlayingWidget(PropertyGroup):
+    pos_x: FloatProperty(name="Pos X", default=6.0, min=-100.0, max=100.0, update=live_update_callback)
+    pos_y: FloatProperty(name="Pos Y", default=-4.0, min=-100.0, max=100.0, update=live_update_callback)
+    width: FloatProperty(name="Width", default=4.0, min=0.1, max=100.0, update=live_update_callback)
+    height: FloatProperty(name="Height", default=1.0, min=0.1, max=100.0, update=live_update_callback)
+
+    fade_in: FloatProperty(name="Fade In Speed", default=0.5, min=0.0, max=10.0)
+    fade_out: FloatProperty(name="Fade Out Speed", default=0.5, min=0.0, max=10.0)
+    slide_dir: EnumProperty(name="Slide Direction", items=[("UP", "Up", ""), ("DOWN", "Down", ""), ("LEFT", "Left", ""), ("RIGHT", "Right", ""), ("NONE", "None", "")], default="UP")
+    slide_dist: FloatProperty(name="Slide Distance", default=0.5, min=0.0, max=10.0)
+
+    fill_type: EnumProperty(name="Background Fill", items=FILL_TYPES, default="COLOR_RAMP", update=live_update_callback)
+    fill_color: FloatVectorProperty(name="Fill Color", subtype="COLOR", size=4, min=0.0, max=1.0, default=(0.05, 0.05, 0.05, 0.8), update=live_update_callback)
+    ramp_color_a: FloatVectorProperty(name="Ramp A", subtype="COLOR", size=4, min=0.0, max=1.0, default=(0.02, 0.02, 0.02, 0.9), update=live_update_callback)
+    ramp_color_b: FloatVectorProperty(name="Ramp B", subtype="COLOR", size=4, min=0.0, max=1.0, default=(0.1, 0.1, 0.1, 0.0), update=live_update_callback)
+    ramp_direction: EnumProperty(name="Ramp Direction", items=RAMP_DIRECTION_TYPES, default="HORIZONTAL", update=live_update_callback)
+    ramp_offset_x: FloatProperty(name="Ramp Offset X", default=0.0, min=-10.0, max=10.0, update=live_update_callback)
+    ramp_offset_y: FloatProperty(name="Ramp Offset Y", default=0.0, min=-10.0, max=10.0, update=live_update_callback)
+
+    show_artwork: BoolProperty(name="Show Album Art", default=True, update=live_update_callback)
+    artwork_size: FloatProperty(name="Artwork Size", default=0.8, min=0.1, max=10.0, update=live_update_callback)
+    artwork_offset_x: FloatProperty(name="Artwork Offset X", default=-1.4, min=-10.0, max=10.0, update=live_update_callback)
+    artwork_offset_y: FloatProperty(name="Artwork Offset Y", default=0.0, min=-10.0, max=10.0, update=live_update_callback)
+
+    title_size: FloatProperty(name="Title Size", default=0.3, min=0.05, max=5.0, update=live_update_callback)
+    title_color: FloatVectorProperty(name="Title Color", subtype="COLOR", size=4, min=0.0, max=1.0, default=(1.0, 1.0, 1.0, 1.0), update=live_update_callback)
+    title_offset_x: FloatProperty(name="Title Offset X", default=-0.8, min=-10.0, max=10.0, update=live_update_callback)
+    title_offset_y: FloatProperty(name="Title Offset Y", default=0.15, min=-10.0, max=10.0, update=live_update_callback)
+
+    artist_size: FloatProperty(name="Artist Size", default=0.2, min=0.05, max=5.0, update=live_update_callback)
+    artist_color: FloatVectorProperty(name="Artist Color", subtype="COLOR", size=4, min=0.0, max=1.0, default=(0.7, 0.7, 0.7, 1.0), update=live_update_callback)
+    artist_offset_x: FloatProperty(name="Artist Offset X", default=-0.8, min=-10.0, max=10.0, update=live_update_callback)
+    artist_offset_y: FloatProperty(name="Artist Offset Y", default=-0.2, min=-10.0, max=10.0, update=live_update_callback)
+
+    preset_name: StringProperty(name="Preset Name", default="My Preset")
+    active_preset: EnumProperty(name="Preset", items=lambda self, context: get_widget_presets(), update=apply_widget_preset)
+
+def get_widget_preset_filepath():
+    import os
+    import bpy
+    user_dir = bpy.utils.user_resource('SCRIPTS', path="presets")
+    os.makedirs(user_dir, exist_ok=True)
+    return os.path.join(user_dir, "agmf_now_playing_presets.json")
+
+def get_widget_presets():
+    import json
+    import os
+    filepath = get_widget_preset_filepath()
+    presets = [("DEFAULT", "Default", ""), ("SLEEK", "Sleek Bottom", ""), ("CORNER", "Corner Card", "")]
+    if os.path.exists(filepath):
+        try:
+            with open(filepath, 'r') as f:
+                data = json.load(f)
+                for name in data.keys():
+                    presets.append((name, name, ""))
+        except: pass
+    return presets
+
+def apply_widget_preset(self, context):
+    import json
+    import os
+    preset = self.active_preset
+
+    # Built-in presets
+    data = None
+    if preset == "DEFAULT":
+        data = {"pos_x": 6.0, "pos_y": -4.0, "width": 4.0, "height": 1.0, "fade_in": 0.5, "fade_out": 0.5, "slide_dir": "UP", "slide_dist": 0.5, "fill_type": "COLOR_RAMP", "fill_color": [0.05, 0.05, 0.05, 0.8], "ramp_color_a": [0.02, 0.02, 0.02, 0.9], "ramp_color_b": [0.1, 0.1, 0.1, 0.0], "ramp_direction": "HORIZONTAL", "ramp_offset_x": 0.0, "ramp_offset_y": 0.0, "show_artwork": True, "artwork_size": 0.8, "artwork_offset_x": -1.4, "artwork_offset_y": 0.0, "title_size": 0.3, "title_color": [1.0, 1.0, 1.0, 1.0], "title_offset_x": -0.8, "title_offset_y": 0.15, "artist_size": 0.2, "artist_color": [0.7, 0.7, 0.7, 1.0], "artist_offset_x": -0.8, "artist_offset_y": -0.2}
+    elif preset == "SLEEK":
+        data = {"pos_x": 0.0, "pos_y": -4.5, "width": 10.0, "height": 0.8, "fade_in": 0.8, "fade_out": 0.8, "slide_dir": "UP", "slide_dist": 1.0, "fill_type": "COLOR_RAMP", "fill_color": [0.0, 0.0, 0.0, 0.8], "ramp_color_a": [0.0, 0.0, 0.0, 0.9], "ramp_color_b": [0.0, 0.0, 0.0, 0.0], "ramp_direction": "VERTICAL", "ramp_offset_x": 0.0, "ramp_offset_y": -0.5, "show_artwork": False, "artwork_size": 0.8, "artwork_offset_x": -1.4, "artwork_offset_y": 0.0, "title_size": 0.35, "title_color": [1.0, 1.0, 1.0, 1.0], "title_offset_x": -4.0, "title_offset_y": 0.0, "artist_size": 0.25, "artist_color": [0.8, 0.8, 0.8, 1.0], "artist_offset_x": 2.0, "artist_offset_y": 0.0}
+    elif preset == "CORNER":
+        data = {"pos_x": -6.5, "pos_y": 3.5, "width": 3.0, "height": 1.5, "fade_in": 0.3, "fade_out": 0.3, "slide_dir": "RIGHT", "slide_dist": 0.8, "fill_type": "COLOR", "fill_color": [0.1, 0.1, 0.15, 0.85], "ramp_color_a": [0.02, 0.02, 0.02, 0.9], "ramp_color_b": [0.1, 0.1, 0.1, 0.0], "ramp_direction": "HORIZONTAL", "ramp_offset_x": 0.0, "ramp_offset_y": 0.0, "show_artwork": True, "artwork_size": 1.2, "artwork_offset_x": 0.0, "artwork_offset_y": 0.0, "title_size": 0.25, "title_color": [1.0, 1.0, 1.0, 1.0], "title_offset_x": 0.0, "title_offset_y": -1.0, "artist_size": 0.18, "artist_color": [0.7, 0.7, 0.7, 1.0], "artist_offset_x": 0.0, "artist_offset_y": -1.3}
+    else:
+        filepath = get_widget_preset_filepath()
+        if os.path.exists(filepath):
+            try:
+                with open(filepath, 'r') as f:
+                    all_presets = json.load(f)
+                    if preset in all_presets:
+                        data = all_presets[preset]
+            except: pass
+
+    if data:
+        for k, v in data.items():
+            try: setattr(self, k, v)
+            except: pass
+        request_live_rebuild()
+
+class AGMF_OT_SaveWidgetPreset(Operator):
+    bl_idname = "agmf.save_widget_preset"
+    bl_label = "Save Preset"
+
+    def execute(self, context):
+        import json
+        import os
+        props = context.scene.agmf_props.now_playing_widget
+        name = props.preset_name
+        if not name: return {'CANCELLED'}
+
+        data = {
+            "pos_x": props.pos_x, "pos_y": props.pos_y, "width": props.width, "height": props.height,
+            "fade_in": props.fade_in, "fade_out": props.fade_out, "slide_dir": props.slide_dir, "slide_dist": props.slide_dist,
+            "fill_type": props.fill_type, "fill_color": list(props.fill_color),
+            "ramp_color_a": list(props.ramp_color_a), "ramp_color_b": list(props.ramp_color_b),
+            "ramp_direction": props.ramp_direction, "ramp_offset_x": props.ramp_offset_x, "ramp_offset_y": props.ramp_offset_y,
+            "show_artwork": props.show_artwork, "artwork_size": props.artwork_size, "artwork_offset_x": props.artwork_offset_x, "artwork_offset_y": props.artwork_offset_y,
+            "title_size": props.title_size, "title_color": list(props.title_color), "title_offset_x": props.title_offset_x, "title_offset_y": props.title_offset_y,
+            "artist_size": props.artist_size, "artist_color": list(props.artist_color), "artist_offset_x": props.artist_offset_x, "artist_offset_y": props.artist_offset_y,
+        }
+
+        filepath = get_widget_preset_filepath()
+        all_presets = {}
+        if os.path.exists(filepath):
+            try:
+                with open(filepath, 'r') as f:
+                    all_presets = json.load(f)
+            except: pass
+
+        all_presets[name] = data
+        with open(filepath, 'w') as f:
+            json.dump(all_presets, f)
+
+        self.report({'INFO'}, f"Saved widget preset '{name}'")
+        return {'FINISHED'}
+
+class AGMF_OT_DeleteWidgetPreset(Operator):
+    bl_idname = "agmf.delete_widget_preset"
+    bl_label = "Delete Preset"
+
+    def execute(self, context):
+        import json
+        import os
+        props = context.scene.agmf_props.now_playing_widget
+        name = props.active_preset
+        if name in ["DEFAULT", "SLEEK", "CORNER"]:
+            self.report({'WARNING'}, "Cannot delete built-in presets")
+            return {'CANCELLED'}
+
+        filepath = get_widget_preset_filepath()
+        if os.path.exists(filepath):
+            try:
+                with open(filepath, 'r') as f:
+                    all_presets = json.load(f)
+                if name in all_presets:
+                    del all_presets[name]
+                    with open(filepath, 'w') as f:
+                        json.dump(all_presets, f)
+                    self.report({'INFO'}, f"Deleted preset '{name}'")
+                    props.active_preset = "DEFAULT"
+            except: pass
+
+        return {'FINISHED'}
+
+
 class AGMF_Properties(PropertyGroup):
+    now_playing_widget: PointerProperty(type=AGMF_NowPlayingWidget)
     live_edit: BoolProperty(name="Live Edit", default=True)
     menu_name: StringProperty(name="Menu Name", default="MainMenu", update=live_update_callback)
     menu_root_name: StringProperty(name="Root Name", default="")
@@ -2191,6 +2571,8 @@ class AGMF_OT_ApplyPanelColors(Operator):
             item.fill_color = panel.batch_fill_color
             item.ramp_color_a = panel.batch_ramp_color_a
             item.ramp_color_b = panel.batch_ramp_color_b
+            item.ramp_offset_x = panel.batch_ramp_offset_x
+            item.ramp_offset_y = panel.batch_ramp_offset_y
             item.focus_fill_color = panel.batch_focus_color
             item.press_fill_color = panel.batch_press_color
             if self.include_text:
@@ -2593,8 +2975,15 @@ class AGMF_OT_AddSoundtrackFiles(Operator, ImportHelper):
             base = os.path.splitext(os.path.basename(fp))[0]
             track.sound = snd
             track.filepath = fp
+
+            meta = extract_mp3_metadata(fp)
             track.name = base
-            track.song_title = base
+            track.song_title = meta.get('title') or base
+            track.artist = meta.get('artist', '')
+            track.album = meta.get('album', '')
+            if meta.get('artwork_path'):
+                track.album_art_path = meta.get('artwork_path')
+
             track.track_number = len(props.soundtrack_tracks)
             props.soundtrack_tracks_index = len(props.soundtrack_tracks) - 1
             added += 1
@@ -2847,6 +3236,82 @@ class AGMF_OT_ExportUpbgeNotes(Operator):
         return {"FINISHED"}
 
 
+
+class AGMF_PT_NowPlayingWidgetPanel(Panel):
+    bl_label = "Now Playing Widget Editor"
+    bl_idname = "AGMF_PT_NowPlayingWidgetPanel"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "Menu Forge"
+    bl_parent_id = "AGMF_PT_MainPanel"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        layout = self.layout
+        props = context.scene.agmf_props
+        widget = props.now_playing_widget
+
+        box = layout.box()
+        box.label(text="Presets", icon='PRESET')
+        row = box.row()
+        row.prop(widget, "active_preset", text="")
+        row = box.row()
+        row.prop(widget, "preset_name", text="")
+        row.operator("agmf.save_widget_preset", icon='FILE_TICK')
+        row.operator("agmf.delete_widget_preset", icon='TRASH')
+
+        box = layout.box()
+        box.label(text="Layout & Animation", icon='VIEW_PAN')
+        row = box.row(align=True)
+        row.prop(widget, "pos_x")
+        row.prop(widget, "pos_y")
+        row = box.row(align=True)
+        row.prop(widget, "width")
+        row.prop(widget, "height")
+        row = box.row(align=True)
+        row.prop(widget, "fade_in")
+        row.prop(widget, "fade_out")
+        row = box.row(align=True)
+        row.prop(widget, "slide_dir")
+        row.prop(widget, "slide_dist")
+
+        box = layout.box()
+        box.label(text="Background", icon='SHADING_RENDERED')
+        box.prop(widget, "fill_type")
+        if widget.fill_type == "COLOR":
+            box.prop(widget, "fill_color")
+        elif widget.fill_type == "COLOR_RAMP":
+            box.prop(widget, "ramp_color_a")
+            box.prop(widget, "ramp_color_b")
+            box.prop(widget, "ramp_direction")
+            row = box.row(align=True)
+            row.prop(widget, "ramp_offset_x")
+            row.prop(widget, "ramp_offset_y")
+
+        box = layout.box()
+        box.label(text="Album Artwork", icon='IMAGE_DATA')
+        box.prop(widget, "show_artwork")
+        if widget.show_artwork:
+            box.prop(widget, "artwork_size")
+            row = box.row(align=True)
+            row.prop(widget, "artwork_offset_x")
+            row.prop(widget, "artwork_offset_y")
+
+        box = layout.box()
+        box.label(text="Text Info", icon='FONT_DATA')
+        box.prop(widget, "title_size")
+        box.prop(widget, "title_color")
+        row = box.row(align=True)
+        row.prop(widget, "title_offset_x")
+        row.prop(widget, "title_offset_y")
+        box.separator()
+        box.prop(widget, "artist_size")
+        box.prop(widget, "artist_color")
+        row = box.row(align=True)
+        row.prop(widget, "artist_offset_x")
+        row.prop(widget, "artist_offset_y")
+
+
 class AGMF_PT_MainPanel(Panel):
     bl_label = "Ascend Menu Forge"
     bl_idname = "AGMF_PT_MainPanel"
@@ -3053,6 +3518,9 @@ class AGMF_PT_MainPanel(Panel):
             if panel.batch_fill_type == "COLOR_RAMP":
                 color_box.prop(panel, "batch_ramp_color_a")
                 color_box.prop(panel, "batch_ramp_color_b")
+                row = color_box.row(align=True)
+                row.prop(panel, "batch_ramp_offset_x", text="Offset X")
+                row.prop(panel, "batch_ramp_offset_y", text="Offset Y")
             else:
                 color_box.prop(panel, "batch_fill_color")
             color_box.prop(panel, "batch_focus_color")
@@ -3122,6 +3590,9 @@ class AGMF_PT_MainPanel(Panel):
                 style.prop(item, "ramp_color_a")
                 style.prop(item, "ramp_color_b")
                 style.prop(item, "ramp_direction")
+                row = style.row(align=True)
+                row.prop(item, "ramp_offset_x")
+                row.prop(item, "ramp_offset_y")
                 style.prop(item, "focus_fill_color")
                 style.prop(item, "press_fill_color")
             elif item.fill_type in {"IMAGE", "VIDEO", "SEQUENCE"}:
@@ -3224,6 +3695,9 @@ classes = (
     AGMF_MenuScreen,
     AGMF_LiveSceneSlot,
     AGMF_BackgroundMediaLayer,
+    AGMF_NowPlayingWidget,
+    AGMF_OT_SaveWidgetPreset,
+    AGMF_OT_DeleteWidgetPreset,
     AGMF_SoundtrackTrack,
     AGMF_Properties,
     AGMF_UL_MenuItems,
@@ -3271,6 +3745,7 @@ classes = (
     AGMF_OT_GenerateRuntimeScripts,
     AGMF_OT_ExportUpbgeNotes,
     AGMF_PT_MainPanel,
+    AGMF_PT_NowPlayingWidgetPanel,
 )
 
 
