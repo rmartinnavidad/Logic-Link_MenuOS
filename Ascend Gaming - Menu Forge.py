@@ -2034,43 +2034,6 @@ class AGMF_SoundtrackTrack(PropertyGroup):
 
 
 
-class AGMF_NowPlayingWidget(PropertyGroup):
-    pos_x: FloatProperty(name="Pos X", default=6.0, min=-100.0, max=100.0, update=live_update_callback)
-    pos_y: FloatProperty(name="Pos Y", default=-4.0, min=-100.0, max=100.0, update=live_update_callback)
-    width: FloatProperty(name="Width", default=4.0, min=0.1, max=100.0, update=live_update_callback)
-    height: FloatProperty(name="Height", default=1.0, min=0.1, max=100.0, update=live_update_callback)
-
-    fade_in: FloatProperty(name="Fade In Speed", default=0.5, min=0.0, max=10.0)
-    fade_out: FloatProperty(name="Fade Out Speed", default=0.5, min=0.0, max=10.0)
-    slide_dir: EnumProperty(name="Slide Direction", items=[("UP", "Up", ""), ("DOWN", "Down", ""), ("LEFT", "Left", ""), ("RIGHT", "Right", ""), ("NONE", "None", "")], default="UP")
-    slide_dist: FloatProperty(name="Slide Distance", default=0.5, min=0.0, max=10.0)
-
-    fill_type: EnumProperty(name="Background Fill", items=FILL_TYPES, default="COLOR_RAMP", update=live_update_callback)
-    fill_color: FloatVectorProperty(name="Fill Color", subtype="COLOR", size=4, min=0.0, max=1.0, default=(0.05, 0.05, 0.05, 0.8), update=live_update_callback)
-    ramp_color_a: FloatVectorProperty(name="Ramp A", subtype="COLOR", size=4, min=0.0, max=1.0, default=(0.02, 0.02, 0.02, 0.9), update=live_update_callback)
-    ramp_color_b: FloatVectorProperty(name="Ramp B", subtype="COLOR", size=4, min=0.0, max=1.0, default=(0.1, 0.1, 0.1, 0.0), update=live_update_callback)
-    ramp_direction: EnumProperty(name="Ramp Direction", items=RAMP_DIRECTION_TYPES, default="HORIZONTAL", update=live_update_callback)
-    ramp_offset_x: FloatProperty(name="Ramp Offset X", default=0.0, min=-10.0, max=10.0, update=live_update_callback)
-    ramp_offset_y: FloatProperty(name="Ramp Offset Y", default=0.0, min=-10.0, max=10.0, update=live_update_callback)
-
-    show_artwork: BoolProperty(name="Show Album Art", default=True, update=live_update_callback)
-    artwork_size: FloatProperty(name="Artwork Size", default=0.8, min=0.1, max=10.0, update=live_update_callback)
-    artwork_offset_x: FloatProperty(name="Artwork Offset X", default=-1.4, min=-10.0, max=10.0, update=live_update_callback)
-    artwork_offset_y: FloatProperty(name="Artwork Offset Y", default=0.0, min=-10.0, max=10.0, update=live_update_callback)
-
-    title_size: FloatProperty(name="Title Size", default=0.3, min=0.05, max=5.0, update=live_update_callback)
-    title_color: FloatVectorProperty(name="Title Color", subtype="COLOR", size=4, min=0.0, max=1.0, default=(1.0, 1.0, 1.0, 1.0), update=live_update_callback)
-    title_offset_x: FloatProperty(name="Title Offset X", default=-0.8, min=-10.0, max=10.0, update=live_update_callback)
-    title_offset_y: FloatProperty(name="Title Offset Y", default=0.15, min=-10.0, max=10.0, update=live_update_callback)
-
-    artist_size: FloatProperty(name="Artist Size", default=0.2, min=0.05, max=5.0, update=live_update_callback)
-    artist_color: FloatVectorProperty(name="Artist Color", subtype="COLOR", size=4, min=0.0, max=1.0, default=(0.7, 0.7, 0.7, 1.0), update=live_update_callback)
-    artist_offset_x: FloatProperty(name="Artist Offset X", default=-0.8, min=-10.0, max=10.0, update=live_update_callback)
-    artist_offset_y: FloatProperty(name="Artist Offset Y", default=-0.2, min=-10.0, max=10.0, update=live_update_callback)
-
-    preset_name: StringProperty(name="Preset Name", default="My Preset")
-    active_preset: EnumProperty(name="Preset", items=lambda self, context: get_widget_presets(), update=apply_widget_preset)
-
 def get_widget_preset_filepath():
     import os
     import bpy
@@ -2120,6 +2083,44 @@ def apply_widget_preset(self, context):
             try: setattr(self, k, v)
             except: pass
         request_live_rebuild()
+
+
+class AGMF_NowPlayingWidget(PropertyGroup):
+    pos_x: FloatProperty(name="Pos X", default=6.0, min=-100.0, max=100.0, update=live_update_callback)
+    pos_y: FloatProperty(name="Pos Y", default=-4.0, min=-100.0, max=100.0, update=live_update_callback)
+    width: FloatProperty(name="Width", default=4.0, min=0.1, max=100.0, update=live_update_callback)
+    height: FloatProperty(name="Height", default=1.0, min=0.1, max=100.0, update=live_update_callback)
+
+    fade_in: FloatProperty(name="Fade In Speed", default=0.5, min=0.0, max=10.0)
+    fade_out: FloatProperty(name="Fade Out Speed", default=0.5, min=0.0, max=10.0)
+    slide_dir: EnumProperty(name="Slide Direction", items=[("UP", "Up", ""), ("DOWN", "Down", ""), ("LEFT", "Left", ""), ("RIGHT", "Right", ""), ("NONE", "None", "")], default="UP")
+    slide_dist: FloatProperty(name="Slide Distance", default=0.5, min=0.0, max=10.0)
+
+    fill_type: EnumProperty(name="Background Fill", items=FILL_TYPES, default="COLOR_RAMP", update=live_update_callback)
+    fill_color: FloatVectorProperty(name="Fill Color", subtype="COLOR", size=4, min=0.0, max=1.0, default=(0.05, 0.05, 0.05, 0.8), update=live_update_callback)
+    ramp_color_a: FloatVectorProperty(name="Ramp A", subtype="COLOR", size=4, min=0.0, max=1.0, default=(0.02, 0.02, 0.02, 0.9), update=live_update_callback)
+    ramp_color_b: FloatVectorProperty(name="Ramp B", subtype="COLOR", size=4, min=0.0, max=1.0, default=(0.1, 0.1, 0.1, 0.0), update=live_update_callback)
+    ramp_direction: EnumProperty(name="Ramp Direction", items=RAMP_DIRECTION_TYPES, default="HORIZONTAL", update=live_update_callback)
+    ramp_offset_x: FloatProperty(name="Ramp Offset X", default=0.0, min=-10.0, max=10.0, update=live_update_callback)
+    ramp_offset_y: FloatProperty(name="Ramp Offset Y", default=0.0, min=-10.0, max=10.0, update=live_update_callback)
+
+    show_artwork: BoolProperty(name="Show Album Art", default=True, update=live_update_callback)
+    artwork_size: FloatProperty(name="Artwork Size", default=0.8, min=0.1, max=10.0, update=live_update_callback)
+    artwork_offset_x: FloatProperty(name="Artwork Offset X", default=-1.4, min=-10.0, max=10.0, update=live_update_callback)
+    artwork_offset_y: FloatProperty(name="Artwork Offset Y", default=0.0, min=-10.0, max=10.0, update=live_update_callback)
+
+    title_size: FloatProperty(name="Title Size", default=0.3, min=0.05, max=5.0, update=live_update_callback)
+    title_color: FloatVectorProperty(name="Title Color", subtype="COLOR", size=4, min=0.0, max=1.0, default=(1.0, 1.0, 1.0, 1.0), update=live_update_callback)
+    title_offset_x: FloatProperty(name="Title Offset X", default=-0.8, min=-10.0, max=10.0, update=live_update_callback)
+    title_offset_y: FloatProperty(name="Title Offset Y", default=0.15, min=-10.0, max=10.0, update=live_update_callback)
+
+    artist_size: FloatProperty(name="Artist Size", default=0.2, min=0.05, max=5.0, update=live_update_callback)
+    artist_color: FloatVectorProperty(name="Artist Color", subtype="COLOR", size=4, min=0.0, max=1.0, default=(0.7, 0.7, 0.7, 1.0), update=live_update_callback)
+    artist_offset_x: FloatProperty(name="Artist Offset X", default=-0.8, min=-10.0, max=10.0, update=live_update_callback)
+    artist_offset_y: FloatProperty(name="Artist Offset Y", default=-0.2, min=-10.0, max=10.0, update=live_update_callback)
+
+    preset_name: StringProperty(name="Preset Name", default="My Preset")
+    active_preset: EnumProperty(name="Preset", items=lambda self, context: get_widget_presets(), update=apply_widget_preset)
 
 class AGMF_OT_SaveWidgetPreset(Operator):
     bl_idname = "agmf.save_widget_preset"
